@@ -32,12 +32,21 @@ jobs:
       - name: Work out version
         id: ver
         run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then V="${GITHUB_REF_NAME#v}"; else V="0.0.0-dev"; fi
+          FIRST=$(git log -1 --format=%s)
+          REL=none
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            V="${GITHUB_REF_NAME#v}"; REL=tag
+          elif [[ "$GITHUB_REF" == refs/heads/main && "$FIRST" =~ ^Release\ v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            V="${BASH_REMATCH[1]}"; REL=commit
+          else
+            V="0.0.0-dev"
+          fi
           IFS=. read -r MA MI PA <<< "${V%%-*}"
           CODE=$(( ${MA:-0} * 10000 + ${MI:-0} * 100 + ${PA:-0} ))
           if [ "$CODE" -le 0 ]; then CODE=1; fi
           echo "name=$V" >> "$GITHUB_OUTPUT"
           echo "code=$CODE" >> "$GITHUB_OUTPUT"
+          echo "release=$REL" >> "$GITHUB_OUTPUT"
 
       - name: Test and build
         run: gradle --no-daemon testDebugUnitTest assembleRelease -PversionName=${{ steps.ver.outputs.name }} -PversionCode=${{ steps.ver.outputs.code }}
@@ -48,12 +57,18 @@ jobs:
           path: app/build/outputs/apk/release/*.apk
 
       - name: Publish release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: steps.ver.outputs.release != 'none'
         env:
           GH_TOKEN: ${{ github.token }}
+          V: ${{ steps.ver.outputs.name }}
         run: |
-          git fetch --force origin "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
-          git tag -l --format='%(contents)' "$GITHUB_REF_NAME" > notes.md
-          cp app/build/outputs/apk/release/app-release.apk "ClusterSaver-${GITHUB_REF_NAME}.apk"
-          gh release create "$GITHUB_REF_NAME" "ClusterSaver-${GITHUB_REF_NAME}.apk" \
-            --title "ClusterSaver ${GITHUB_REF_NAME}" --notes-file notes.md
+          TAG="v$V"
+          if [ "${{ steps.ver.outputs.release }}" = tag ]; then
+            git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
+            git tag -l --format='%(contents)' "$TAG" > notes.md
+          else
+            git log -1 --format=%b | grep -v -E '^(Co-Authored-By|Claude-Session):' > notes.md
+          fi
+          cp app/build/outputs/apk/release/app-release.apk "ClusterSaver-$TAG.apk"
+          gh release create "$TAG" "ClusterSaver-$TAG.apk" --target "$GITHUB_SHA" \
+            --title "ClusterSaver $TAG" --notes-file notes.md
